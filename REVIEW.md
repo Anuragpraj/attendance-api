@@ -1,0 +1,21 @@
+# REVIEW.md
+
+| # | Where | What is wrong | How you'd notice it | How I fixed it |
+|---|---|---|---|---|
+| 1 | `compute_late_minutes` | Uses the punch's own naive server clock, not IST, and always today's date, so an overnight shift is measured against the wrong day. | Server not in IST: punch-in 09:45 IST gives a wrong late value. Shift 22:00, punch-in 02:00 next day gives a nonsense (negative, so 0) result. | `derive()` builds the shift start from the IST attendance date (R1). |
+| 2 | `compute_late_minutes` | `int(seconds / 60) > 10` makes 09:40:01 count as 10 minutes, which is not greater than 10, so it returns 0. Sub-seconds are not truncated. | 09:40:01 must give 10 but gives 0; 09:40:59 also gives 0. | Late only if more than 600 seconds, then floor to whole minutes; instants are cut to whole seconds. |
+| 3 | `compute_work_hours` | Python `round` on floats is not half-up. | 9630 seconds is 2.675 hours; it gives 2.67 but the rule says 2.68. | `rnd()` uses Decimal with half-up rounding. |
+| 4 | `compute_overtime` | No 30-minute minimum, shift end always on the same day, and it mixes naive and aware datetimes. | Punch-out 18:40 on shift end 18:30 gives 10, must be 0. Overnight shifts give negative or wrong values, and subtracting naive minus aware raises TypeError. | 30-minute minimum; shift end moves to the next day for overnight shifts; all datetimes are timezone-aware. |
+| 5 | `EmployeeIn` | No validation of code, email, HH:MM times, dates or lengths. | `emp_code: "x"` or `shift_start: "25:99"` returns 201. | Patterns, length limits and a check that shift start differs from shift end; 422 otherwise. |
+| 6 | `create_employee` | Check-then-insert race; `created_at` is naive local time returned as a date string. | Two parallel creates both return 201; `created_at` is not epoch milliseconds. | Unique index plus duplicate-key handling gives 409; UTC time, returned as epoch ms. |
+| 7 | `/health` | Always says ok. | Stop MongoDB: still 200. | Pings MongoDB and returns 503 if it fails. |
+| 8 | `list_employees` | `skip = page * page_size` skips the first page; `total` ignores the department filter; no sort; paging unchecked. | `page=1` misses the first rows; filtered `total` is wrong. | `(page-1) * size`, filtered count, sorted by `emp_code`, limits on page and page_size. |
+| 9 | `punch_in` | Unknown employee gives `None["shift_start"]`. | Unknown `emp_code` returns 500. | 404. |
+| 10 | `punch_in` | Date comes from the server clock, not IST; `punched_at` accepts seconds or huge numbers; `if body.punched_at` treats 0 as missing. | Punch near midnight lands on the wrong date; `punched_at` in seconds gives a 1970 date; very large values give 500. | Strict epoch-ms type with range limits, UTC-aware times, IST date by R1. |
+| 11 | `punch_in` | Check-then-insert race. | Two parallel punch-ins both return 201. | Unique `(emp_code, date)` index; duplicate key becomes 409. |
+| 12 | `punch_in` | `status` accepts any string; response has an `id` field and raw datetimes. | `status: "ABSENT"` or `"abc"` is accepted. | Only PRESENT, WFH, ON_DUTY allowed; one serializer returns the contract's fields in epoch ms. |
+| 13 | `list_attendance` | Loads every matching record, sorts in Python by date only, total from `len`. | Slow at 100,000 records; same-date order is random. | Filter, sort (date desc, emp_code), skip and limit in MongoDB, backed by an index. |
+| 14 | `list_attendance` | No validation of dates, status or paging; `date_from` after `date_to` is accepted; raw records are returned (extra `id`, datetimes, missing fields come back differently). | `date_from=2026-07-09&date_to=2026-07-01` returns 200. | Validation gives 422; the serializer fills defaults and uses the contract's shape. |
+| 15 | `MongoClient` / startup | No timezone awareness, no timeouts, no indexes. | Naive vs aware comparisons fail; list and analytics scan the whole collection. | `tz_aware=True`, a server-selection timeout, indexes created at startup. |
+
+**Looked at and found fine:** `load_dotenv()` does not override real environment variables, which is what we want. `doc.pop("_id")` after `insert_one` is correct, because insert adds `_id` to the dict. The `{"_id": 0}` projection in `list_employees` is fine. The `IST` constant is correct.
